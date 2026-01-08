@@ -5,7 +5,7 @@ Local-first progressive overload training app with a rugged in-gym UI, timers, a
 ## Features
 
 - Progressive overload logic with automatic weight/rep progression per exercise.
-- Daily cycle support (Push A, Pull A, Mobility, Push B, Pull B, Rest).
+- Daily cycle support (Push A, Pull A, Mobility, Push B, Pull B).
 - Large in-gym UI with timers, set tracking, and quick adjustments.
 - Local-first storage with CSV export.
 
@@ -44,7 +44,7 @@ Recommended workflow when switching networks:
 - Open the Tailscale app on the iPhone and confirm **Connected**.
 - On the laptop, ensure the app service is running:
   ```bash
-  systemctl --user status gym-app
+  systemctl --user status gym-app.service
   ```
 - Ensure Tailscale Serve is configured (persistent):
   ```bash
@@ -66,6 +66,7 @@ Recommended workflow when switching networks:
 ## Data and export
 
 - Data is stored locally in the browser's localStorage on the laptop under `overload_state_v1`.
+- Optional sync server can persist and merge sessions across devices.
 - Progress tracking is stored with the latest completed session:
   - `progress.lastCompletedDate`
   - `progress.lastCompletedDayKey`
@@ -88,6 +89,29 @@ Recommended workflow when switching networks:
 - Default rest timer is 90s with a 120s option.
 - Program automatically increases from 3 → 4 → 5 → 6 exercises after weeks 4, 8, and 12.
 - Pull-down → pull-up transition uses performance + bodyweight thresholds and adds negatives when ready.
+
+## Sync server (iPhone -> laptop)
+
+Run a lightweight sync server on the laptop and point the iPhone to it. The app pulls on load and pushes automatically when finishing a day.
+
+1. Start the server on the laptop:
+   ```bash
+   node sync-server.js --port 8787 --file ./sync-data.json
+   ```
+   Or manage it with systemd:
+   ```bash
+   systemctl --user enable --now gym-app-sync.service
+   systemctl --user status gym-app-sync.service --no-pager
+   ```
+2. In the app **Settings**, set **Sync server URL** to:
+   ```text
+   http://<laptop-tailscale-ip>:8787
+   ```
+3. Finish a workout on the iPhone to push the latest session and settings.
+
+If the field is empty, the app auto-fills it using the current host (same hostname, port 8787).
+
+The sync state is stored in `sync-data.json` on the laptop.
 
 ## Troubleshooting
 

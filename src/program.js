@@ -1,6 +1,7 @@
 import { roundTo } from './utils.js';
 
-export const CYCLE = ['Push A', 'Pull A', 'Mobility', 'Push B', 'Pull B', 'Rest', 'Rest'];
+export const TRAINING_DAYS = ['Push A', 'Pull A', 'Mobility', 'Push B', 'Pull B'];
+export const CYCLE = [...TRAINING_DAYS, 'Rest', 'Rest'];
 
 export const EXERCISE_LIBRARY = {
   squat: {
@@ -290,6 +291,12 @@ export function getNextDayKey(currentDayKey) {
   const index = CYCLE.indexOf(currentDayKey);
   const nextIndex = index === -1 ? 0 : index + 1;
   return getDayKeyFromIndex(nextIndex);
+}
+
+export function getNextTrainingDayKey(currentDayKey) {
+  const index = TRAINING_DAYS.indexOf(currentDayKey);
+  if (index === -1) return TRAINING_DAYS[0];
+  return TRAINING_DAYS[(index + 1) % TRAINING_DAYS.length];
 }
 
 export function createInitialExerciseState() {

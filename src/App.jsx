@@ -1,18 +1,19 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   buildDayExercises,
-  getDayKey,
-  getNextDayKey,
-  getWeekNumber
+  getNextTrainingDayKey,
+  TRAINING_DAYS
 } from './program.js';
 import { buildDefaultState, exportCsv, loadState, saveState } from './storage.js';
-import { formatDuration, formatWeight, todayISO } from './utils.js';
+import { createSessionId, formatDuration, formatWeight, todayISO } from './utils.js';
+import { mergeState } from './sync.js';
 
 const SETS_PER_EXERCISE = 3;
-const DAY_OPTIONS = ['Push A', 'Pull A', 'Mobility', 'Push B', 'Pull B', 'Rest'];
+const DAY_OPTIONS = TRAINING_DAYS;
 
 function buildSession({ dayKey, weekNumber, exercises }) {
   return {
+    id: createSessionId(),
     date: todayISO(),
     dayKey,
     weekNumber,
@@ -76,6 +77,8 @@ export default function App() {
   const [view, setView] = useState('today');
   const [infoExercise, setInfoExercise] = useState(null);
   const [selectedDayKey, setSelectedDayKey] = useState(null);
+  const [lastSyncAt, setLastSyncAt] = useState(null);
+  const [syncError, setSyncError] = useState(null);
   const restPrevRef = useRef(0);
   const audioCtxRef = useRef(null);
   const restEndAtRef = useRef(null);
@@ -124,12 +127,31 @@ export default function App() {
 
   const lastSession = getLatestSession(state.sessions);
   const hasSessionToday = lastSession?.date === todayISO();
-  const computedDayKey = getDayKey(state.programStartDate);
   const progress = state.progress ?? {};
   const lastCompletedDayKey = progress.lastCompletedDayKey ?? lastSession?.dayKey ?? null;
-  const dayKey = lastCompletedDayKey ? getNextDayKey(lastCompletedDayKey) : computedDayKey;
-  const weekNumber = getWeekNumber(state.programStartDate);
+  const dayKey = lastCompletedDayKey
+    ? getNextTrainingDayKey(lastCompletedDayKey)
+    : TRAINING_DAYS[0];
+  const weekNumber = progress.currentWeekNumber ?? 1;
   const plannedDayKey = selectedDayKey ?? dayKey;
+  const syncBaseUrl = (state.settings.syncUrl ?? '').trim().replace(/\/$/, '');
+
+  useEffect(() => {
+    if (state.settings.syncUrl) return;
+    if (typeof window === 'undefined') return;
+    const protocol = window.location.protocol;
+    if (protocol !== 'http:' && protocol !== 'https:') return;
+    const host = window.location.hostname;
+    if (!host) return;
+    const defaultSyncUrl = `${protocol}//${host}:8787`;
+    setState((prev) => ({
+      ...prev,
+      settings: {
+        ...prev.settings,
+        syncUrl: defaultSyncUrl
+      }
+    }));
+  }, [state.settings.syncUrl]);
 
   const todayExercises = useMemo(() => {
     return buildDayExercises({
@@ -150,6 +172,39 @@ export default function App() {
   useEffect(() => {
     saveState(state);
   }, [state]);
+
+  useEffect(() => {
+    if (!syncBaseUrl) {
+      setSyncError(null);
+      return;
+    }
+    let cancelled = false;
+
+    const pullSync = async () => {
+      try {
+        setSyncError(null);
+        const response = await fetch(`${syncBaseUrl}/sync/state`, {
+          method: 'GET'
+        });
+        if (!response.ok) {
+          throw new Error(`Sync pull failed: ${response.status}`);
+        }
+        const data = await response.json();
+        if (!data?.state || cancelled) return;
+        setState((prev) => mergeState(prev, data.state));
+        setLastSyncAt(Date.now());
+      } catch (error) {
+        if (!cancelled) {
+          setSyncError(error.message ?? 'Sync pull failed');
+        }
+      }
+    };
+
+    void pullSync();
+    return () => {
+      cancelled = true;
+    };
+  }, [syncBaseUrl]);
 
   useEffect(() => {
     if (!activeSession) return undefined;
@@ -225,11 +280,14 @@ export default function App() {
   const currentExerciseIndex = currentExercise
     ? activeSession.exercises.findIndex((exercise) => exercise.id === currentExercise.id)
     : -1;
+  const showAchievedReps = currentExercise
+    ? setInProgress || currentExercise.sets.length > 0
+    : false;
 
   useEffect(() => {
     if (!currentExercise) return;
     setRepSelection(currentExercise.targetReps);
-  }, [currentExercise?.id]);
+  }, [currentExercise?.id, currentExercise?.targetReps]);
 
   useEffect(() => {
     setSelectedDayKey(null);
@@ -318,11 +376,34 @@ export default function App() {
     });
 
     const sessionRecord = {
+      id: activeSession.id,
       date: activeSession.date,
       dayKey: activeSession.dayKey,
       weekNumber: activeSession.weekNumber,
       exercises: exercisesWithSummary
     };
+
+    const previousProgress = nextState.progress ?? {};
+    const previousWeekNumber =
+      previousProgress.currentWeekNumber ?? sessionRecord.weekNumber ?? 1;
+    const previousCompletedDays = Array.isArray(previousProgress.completedDays)
+      ? previousProgress.completedDays
+      : [];
+    const resetCompletedDays =
+      previousProgress.currentWeekNumber &&
+      previousProgress.currentWeekNumber !== sessionRecord.weekNumber;
+    const completedDaySet = new Set(resetCompletedDays ? [] : previousCompletedDays);
+
+    if (TRAINING_DAYS.includes(sessionRecord.dayKey)) {
+      completedDaySet.add(sessionRecord.dayKey);
+    }
+
+    let nextWeekNumber = previousWeekNumber;
+    let nextCompletedDays = Array.from(completedDaySet);
+    if (completedDaySet.size >= TRAINING_DAYS.length) {
+      nextWeekNumber = previousWeekNumber + 1;
+      nextCompletedDays = [];
+    }
 
     nextState = {
       ...nextState,
@@ -330,7 +411,9 @@ export default function App() {
       progress: {
         lastCompletedDate: sessionRecord.date,
         lastCompletedDayKey: sessionRecord.dayKey,
-        lastCompletedWeekNumber: sessionRecord.weekNumber
+        lastCompletedWeekNumber: sessionRecord.weekNumber,
+        currentWeekNumber: nextWeekNumber,
+        completedDays: nextCompletedDays
       }
     };
 
@@ -341,6 +424,32 @@ export default function App() {
     setView('today');
     restEndAtRef.current = null;
     setStartAtRef.current = null;
+
+    if (syncBaseUrl) {
+      void (async () => {
+        try {
+          setSyncError(null);
+          const response = await fetch(`${syncBaseUrl}/sync/push`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              deviceId: nextState.deviceId,
+              state: { ...nextState, updatedAt: Date.now() }
+            })
+          });
+          if (!response.ok) {
+            throw new Error(`Sync push failed: ${response.status}`);
+          }
+          const data = await response.json();
+          if (data?.state) {
+            setState((prev) => mergeState(prev, data.state));
+          }
+          setLastSyncAt(Date.now());
+        } catch (error) {
+          setSyncError(error.message ?? 'Sync push failed');
+        }
+      })();
+    }
   }
 
   function handleResetData() {
@@ -568,8 +677,42 @@ export default function App() {
                   )}
                 </div>
                 <div className="metric-block">
-                  <span className="metric-label">Target reps</span>
-                  {currentExercise.incrementKg > 0 ? (
+                  <div className={`metric-label-row ${showAchievedReps ? 'dual' : ''}`}>
+                    {showAchievedReps ? (
+                      <>
+                        <span className="metric-label">Target reps</span>
+                        <span className="metric-label">Achieved reps</span>
+                      </>
+                    ) : (
+                      <span className="metric-label">Target reps</span>
+                    )}
+                  </div>
+                  {showAchievedReps ? (
+                    <div className="metric-dual">
+                      <select
+                        className="metric-select metric-select-reps"
+                        value={currentExercise.targetReps}
+                        disabled
+                        aria-label="Target reps"
+                      >
+                        <option value={currentExercise.targetReps}>
+                          {currentExercise.targetReps}
+                        </option>
+                      </select>
+                      <select
+                        className="metric-select metric-select-reps"
+                        value={repSelection}
+                        onChange={(event) => setRepSelection(Number(event.target.value))}
+                        aria-label="Set achieved reps"
+                      >
+                        {Array.from({ length: 15 }, (_, i) => i + 1).map((rep) => (
+                          <option key={rep} value={rep}>
+                            {rep}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  ) : currentExercise.incrementKg > 0 ? (
                     <select
                       className="metric-select metric-select-reps"
                       value={currentExercise.targetReps}
@@ -587,24 +730,18 @@ export default function App() {
                       ))}
                     </select>
                   ) : (
-                    <p className="big-target">{currentExercise.targetReps}</p>
+                    <select
+                      className="metric-select metric-select-reps"
+                      value={currentExercise.targetReps}
+                      disabled
+                      aria-label="Target reps"
+                    >
+                      <option value={currentExercise.targetReps}>
+                        {currentExercise.targetReps}
+                      </option>
+                    </select>
                   )}
                 </div>
-              </div>
-
-              <div className="rep-select large">
-                <label htmlFor="repSelect">Achieved reps</label>
-                <select
-                  id="repSelect"
-                  value={repSelection}
-                  onChange={(event) => setRepSelection(Number(event.target.value))}
-                >
-                  {Array.from({ length: 15 }, (_, i) => i + 1).map((rep) => (
-                    <option key={rep} value={rep}>
-                      {rep}
-                    </option>
-                  ))}
-                </select>
               </div>
 
               <div className="session-actions">
@@ -698,7 +835,30 @@ export default function App() {
                   onChange={(event) => handleStartDateChange(event.target.value)}
                 />
               </div>
+              <div>
+                <label htmlFor="syncUrl">Sync server URL</label>
+                <input
+                  id="syncUrl"
+                  type="url"
+                  placeholder="http://100.64.0.1:8787"
+                  value={state.settings.syncUrl}
+                  onChange={(event) =>
+                    handleSettingsChange('syncUrl', event.target.value)
+                  }
+                />
+              </div>
             </div>
+            {(lastSyncAt || syncError) && (
+              <div className="settings-section">
+                <h3>Sync Status</h3>
+                {lastSyncAt && (
+                  <p className="muted">
+                    Last sync: {new Date(lastSyncAt).toLocaleString()}
+                  </p>
+                )}
+                {syncError && <p className="muted">Sync issue: {syncError}</p>}
+              </div>
+            )}
             <div className="settings-section">
               <h3>Actions</h3>
               <div className="settings-actions-row">
@@ -728,11 +888,11 @@ export default function App() {
             </div>
             <div className="settings-section">
               <h3>Training Plan</h3>
-              <p className="muted">Cycle: Push A → Pull A → Mobility → Push B → Pull B → Rest → Rest</p>
+              <p className="muted">Cycle: Push A → Pull A → Mobility → Push B → Pull B</p>
               <p className="muted">
                 Today: {dayKey} {hasSessionToday ? '(completed)' : ''}
               </p>
-              <p className="muted">Next: {getNextDayKey(dayKey)}</p>
+              <p className="muted">Next: {getNextTrainingDayKey(dayKey)}</p>
             </div>
           </div>
         </div>

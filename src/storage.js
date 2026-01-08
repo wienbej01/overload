@@ -1,22 +1,106 @@
-import { createInitialExerciseState } from './program.js';
-import { todayISO, kgToLb } from './utils.js';
+import { buildDayExercises, createInitialExerciseState, TRAINING_DAYS } from './program.js';
+import { createDeviceId, createSessionId, kgToLb, todayISO } from './utils.js';
 
 const STORAGE_KEY = 'overload_state_v1';
+const SETS_PER_EXERCISE = 3;
 
-export function buildDefaultState() {
+function isoDaysAgo(daysAgo) {
+  const date = new Date();
+  date.setDate(date.getDate() - daysAgo);
+  return date.toISOString().slice(0, 10);
+}
+
+function buildSeedSessions({ exerciseStates, bodyweightKg }) {
+  const seedDays = [
+    { dayKey: 'Pull B', date: isoDaysAgo(1) },
+    { dayKey: 'Pull A', date: todayISO() }
+  ];
+
+  const sessions = [];
+  let history = [];
+
+  seedDays.forEach((seed) => {
+    const exercises = buildDayExercises({
+      dayKey: seed.dayKey,
+      weekNumber: 1,
+      exerciseStates,
+      history,
+      bodyweightKg
+    });
+
+    const exercisesWithSets = exercises.map((exercise) => ({
+      ...exercise,
+      sets: Array.from({ length: SETS_PER_EXERCISE }, () => ({
+        reps: exercise.targetReps,
+        durationSec: 0
+      })),
+      success: true
+    }));
+
+    const session = {
+      id: `seed-${seed.date}-${seed.dayKey}`,
+      date: seed.date,
+      dayKey: seed.dayKey,
+      weekNumber: 1,
+      exercises: exercisesWithSets
+    };
+
+    sessions.push(session);
+    history = [...history, session];
+  });
+
+  return sessions;
+}
+
+function buildLegacySessionId(session) {
+  const exerciseIds = (session.exercises ?? [])
+    .map((exercise) => exercise.id)
+    .join('-');
+  return `legacy-${session.date}-${session.dayKey}-${exerciseIds}`;
+}
+
+function ensureSessionIds(sessions) {
+  let changed = false;
+  const next = sessions.map((session) => {
+    if (session.id) return session;
+    changed = true;
+    return {
+      ...session,
+      id: buildLegacySessionId(session) || createSessionId()
+    };
+  });
+  return changed ? next : sessions;
+}
+
+export function buildDefaultState(options = {}) {
+  const { seedSessions = false } = options;
+  const settings = {
+    bodyweightKg: 105,
+    restSeconds: 90,
+    syncUrl: ''
+  };
+  const exerciseStates = createInitialExerciseState();
+  const sessions = seedSessions
+    ? buildSeedSessions({ exerciseStates, bodyweightKg: settings.bodyweightKg })
+    : [];
+  const progress = sessions.length
+    ? deriveProgress(sessions)
+    : {
+        lastCompletedDate: null,
+        lastCompletedDayKey: null,
+        lastCompletedWeekNumber: null,
+        currentWeekNumber: 1,
+        completedDays: []
+      };
+
   return {
-    settings: {
-      bodyweightKg: 105,
-      restSeconds: 90
-    },
+    deviceId: createDeviceId(),
+    settings,
     programStartDate: todayISO(),
-    exerciseStates: createInitialExerciseState(),
-    sessions: [],
-    progress: {
-      lastCompletedDate: null,
-      lastCompletedDayKey: null,
-      lastCompletedWeekNumber: null
-    }
+    exerciseStates,
+    sessions,
+    progress,
+    updatedAt: Date.now()
   };
 }
 
@@ -25,29 +109,59 @@ function deriveProgress(sessions) {
     return {
       lastCompletedDate: null,
       lastCompletedDayKey: null,
-      lastCompletedWeekNumber: null
+      lastCompletedWeekNumber: null,
+      currentWeekNumber: 1,
+      completedDays: []
     };
   }
 
-  const latest = sessions.reduce((current, session) => {
-    if (!current) return session;
-    return session.date >= current.date ? session : current;
-  }, null);
+  const sorted = [...sessions].sort((a, b) => a.date.localeCompare(b.date));
+  const trainingSessions = sorted.filter((session) =>
+    TRAINING_DAYS.includes(session.dayKey)
+  );
+
+  let currentWeekNumber = 1;
+  let completedDays = new Set();
+  let lastCompletedWeekNumber = null;
+
+  trainingSessions.forEach((session) => {
+    lastCompletedWeekNumber = currentWeekNumber;
+    completedDays.add(session.dayKey);
+    if (completedDays.size >= TRAINING_DAYS.length) {
+      currentWeekNumber += 1;
+      completedDays = new Set();
+    }
+  });
+
+  const latestTraining = trainingSessions[trainingSessions.length - 1] ?? null;
 
   return {
-    lastCompletedDate: latest?.date ?? null,
-    lastCompletedDayKey: latest?.dayKey ?? null,
-    lastCompletedWeekNumber: latest?.weekNumber ?? null
+    lastCompletedDate: latestTraining?.date ?? null,
+    lastCompletedDayKey: latestTraining?.dayKey ?? null,
+    lastCompletedWeekNumber,
+    currentWeekNumber,
+    completedDays: Array.from(completedDays)
   };
 }
 
 export function loadState() {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return buildDefaultState();
+    if (!raw) return buildDefaultState({ seedSessions: true });
     const parsed = JSON.parse(raw);
     const defaults = buildDefaultState();
-    const sessions = parsed.sessions ?? defaults.sessions;
+    const settings = { ...defaults.settings, ...parsed.settings };
+    const exerciseStates = { ...defaults.exerciseStates, ...parsed.exerciseStates };
+    let sessions = parsed.sessions ?? defaults.sessions;
+
+    if (!sessions.length) {
+      sessions = buildSeedSessions({
+        exerciseStates,
+        bodyweightKg: settings.bodyweightKg
+      });
+    }
+    sessions = ensureSessionIds(sessions);
+
     const progress = sessions.length
       ? deriveProgress(sessions)
       : { ...defaults.progress, ...parsed.progress };
@@ -55,19 +169,27 @@ export function loadState() {
     return {
       ...defaults,
       ...parsed,
-      settings: { ...defaults.settings, ...parsed.settings },
-      exerciseStates: { ...defaults.exerciseStates, ...parsed.exerciseStates },
+      deviceId: parsed.deviceId ?? defaults.deviceId,
+      settings,
+      exerciseStates,
       sessions,
-      progress
+      progress,
+      updatedAt: parsed.updatedAt ?? defaults.updatedAt
     };
   } catch (error) {
     console.error('Failed to load state', error);
-    return buildDefaultState();
+    return buildDefaultState({ seedSessions: true });
   }
 }
 
 export function saveState(state) {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+  localStorage.setItem(
+    STORAGE_KEY,
+    JSON.stringify({
+      ...state,
+      updatedAt: Date.now()
+    })
+  );
 }
 
 export function exportCsv(sessions) {

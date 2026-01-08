@@ -25,3 +25,18 @@ export function todayISO() {
   const now = new Date();
   return now.toISOString().slice(0, 10);
 }
+
+export function createId(prefix = 'id') {
+  if (typeof crypto !== 'undefined' && crypto.randomUUID) {
+    return `${prefix}_${crypto.randomUUID()}`;
+  }
+  return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+}
+
+export function createSessionId() {
+  return createId('session');
+}
+
+export function createDeviceId() {
+  return createId('device');
+}
