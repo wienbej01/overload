@@ -1,9 +1,15 @@
-import { TRAINING_DAYS } from './program.js';
+import {
+  createInitialExerciseState,
+  dedupeSessionsByDay,
+  deriveProgress,
+  getTrainingDays,
+  normalizeExerciseStates,
+  rebuildExerciseStates
+} from './program.js';
+import { PROGRAMS_BY_ID, PROGRAM_PROFILES } from './programs/index.js';
 
 function buildLegacySessionId(session) {
-  const exerciseIds = (session.exercises ?? [])
-    .map((exercise) => exercise.id)
-    .join('-');
+  const exerciseIds = (session.exercises ?? []).map((exercise) => exercise.id).join('-');
   return `legacy-${session.date}-${session.dayKey}-${exerciseIds}`;
 }
 
@@ -49,91 +55,178 @@ export function mergeSessions(localSessions = [], remoteSessions = []) {
   return Array.from(merged.values()).sort((a, b) => a.date.localeCompare(b.date));
 }
 
-export function deriveProgress(sessions) {
-  if (!sessions?.length) {
-    return {
-      lastCompletedDate: null,
-      lastCompletedDayKey: null,
-      lastCompletedWeekNumber: null,
-      currentWeekNumber: 1,
-      completedDays: []
-    };
-  }
-
-  const sorted = [...sessions].sort((a, b) => a.date.localeCompare(b.date));
-  const trainingSessions = sorted.filter((session) =>
-    TRAINING_DAYS.includes(session.dayKey)
+function latestSessionDate(sessions) {
+  if (!sessions?.length) return '';
+  return sessions.reduce((latest, session) =>
+    session.date > latest ? session.date : latest, ''
   );
+}
 
-  let currentWeekNumber = 1;
-  let completedDays = new Set();
-  let lastCompletedWeekNumber = null;
+function defaultProfileSettings() {
+  return {
+    bodyweightKg: 105,
+    restSeconds: 90
+  };
+}
 
-  trainingSessions.forEach((session) => {
-    lastCompletedWeekNumber = currentWeekNumber;
-    completedDays.add(session.dayKey);
-    if (completedDays.size >= TRAINING_DAYS.length) {
-      currentWeekNumber += 1;
-      completedDays = new Set();
-    }
-  });
-
-  const latestTraining = trainingSessions[trainingSessions.length - 1] ?? null;
+function buildProfileFallback(profileId, overrides = {}) {
+  const profileConfig = PROGRAMS_BY_ID[profileId];
+  const program = profileConfig?.program;
+  const trainingDays = getTrainingDays(program);
+  const base = {
+    id: profileId,
+    name: profileConfig?.name ?? profileId,
+    programId: profileId,
+    programStartDate: overrides.programStartDate,
+    settings: defaultProfileSettings(),
+    exerciseStates: createInitialExerciseState(program),
+    sessions: [],
+    progress: deriveProgress([], trainingDays)
+  };
+  const sessions = overrides.sessions ?? base.sessions;
+  const progress = deriveProgress(sessions, trainingDays);
 
   return {
-    lastCompletedDate: latestTraining?.date ?? null,
-    lastCompletedDayKey: latestTraining?.dayKey ?? null,
-    lastCompletedWeekNumber,
-    currentWeekNumber,
-    completedDays: Array.from(completedDays)
+    ...base,
+    ...overrides,
+    settings: { ...base.settings, ...overrides.settings },
+    exerciseStates: { ...base.exerciseStates, ...overrides.exerciseStates },
+    sessions,
+    progress
+  };
+}
+
+function normalizeState(state) {
+  if (!state) return null;
+  if (state.profiles) return state;
+
+  const defaults = PROGRAM_PROFILES.reduce((acc, profile) => {
+    acc[profile.id] = buildProfileFallback(profile.id);
+    return acc;
+  }, {});
+
+  const jacobProfile = buildProfileFallback('jacob', {
+    programStartDate: state.programStartDate,
+    settings: state.settings,
+    exerciseStates: state.exerciseStates,
+    sessions: state.sessions
+  });
+
+  return {
+    deviceId: state.deviceId,
+    settings: {
+      syncUrl: state.settings?.syncUrl ?? ''
+    },
+    activeProfileId: 'jacob',
+    profiles: {
+      ...defaults,
+      jacob: jacobProfile
+    },
+    updatedAt: state.updatedAt
+  };
+}
+
+function mergeProfile(localProfile, remoteProfile, program) {
+  if (!localProfile && !remoteProfile) return null;
+
+  const localSessions = localProfile?.sessions ?? [];
+  const remoteSessions = remoteProfile?.sessions ?? [];
+  const mergedSessions = dedupeSessionsByDay(
+    mergeSessions(localSessions, remoteSessions)
+  );
+  const localLatest = latestSessionDate(localSessions);
+  const remoteLatest = latestSessionDate(remoteSessions);
+  const preferRemote =
+    remoteSessions.length > localSessions.length || remoteLatest > localLatest;
+
+  const settings = preferRemote
+    ? { ...localProfile?.settings, ...remoteProfile?.settings }
+    : { ...remoteProfile?.settings, ...localProfile?.settings };
+  const exerciseStates = preferRemote
+    ? { ...localProfile?.exerciseStates, ...remoteProfile?.exerciseStates }
+    : { ...remoteProfile?.exerciseStates, ...localProfile?.exerciseStates };
+  const trainingDays = getTrainingDays(program);
+
+  const normalizedStates = normalizeExerciseStates(program, exerciseStates);
+  const rebuiltExerciseStates = rebuildExerciseStates(program, mergedSessions, normalizedStates);
+
+  return {
+    ...(localProfile ?? {}),
+    ...(remoteProfile ?? {}),
+    id: localProfile?.id ?? remoteProfile?.id,
+    name: localProfile?.name ?? remoteProfile?.name,
+    programId: localProfile?.programId ?? remoteProfile?.programId,
+    programStartDate: preferRemote
+      ? remoteProfile?.programStartDate ?? localProfile?.programStartDate
+      : localProfile?.programStartDate ?? remoteProfile?.programStartDate,
+    settings,
+    exerciseStates: rebuiltExerciseStates,
+    sessions: mergedSessions,
+    progress: deriveProgress(mergedSessions, trainingDays)
   };
 }
 
 export function mergeState(localState, remoteState) {
-  if (!localState && !remoteState) return null;
-  if (!localState) {
+  const normalizedLocal = normalizeState(localState);
+  const normalizedRemote = normalizeState(remoteState);
+  if (!normalizedLocal && !normalizedRemote) return null;
+  if (!normalizedLocal) {
+    const profiles = normalizedRemote.profiles ?? {};
+    const mergedProfiles = {};
+    Object.keys(profiles).forEach((profileId) => {
+      const program = PROGRAMS_BY_ID[profileId]?.program;
+      mergedProfiles[profileId] = mergeProfile(null, profiles[profileId], program);
+    });
     return {
-      ...remoteState,
-      progress: deriveProgress(remoteState.sessions ?? [])
+      ...normalizedRemote,
+      profiles: mergedProfiles
     };
   }
-  if (!remoteState) {
+  if (!normalizedRemote) {
+    const profiles = normalizedLocal.profiles ?? {};
+    const mergedProfiles = {};
+    Object.keys(profiles).forEach((profileId) => {
+      const program = PROGRAMS_BY_ID[profileId]?.program;
+      mergedProfiles[profileId] = mergeProfile(profiles[profileId], null, program);
+    });
     return {
-      ...localState,
-      progress: deriveProgress(localState.sessions ?? [])
+      ...normalizedLocal,
+      profiles: mergedProfiles
     };
   }
 
-  const localSessions = localState.sessions ?? [];
-  const remoteSessions = remoteState.sessions ?? [];
-  const mergedSessions = mergeSessions(localSessions, remoteSessions);
-  const localUpdatedAt = localState.updatedAt ?? 0;
-  const remoteUpdatedAt = remoteState.updatedAt ?? 0;
-  const preferRemote =
-    remoteSessions.length > localSessions.length ||
-    (remoteSessions.length === localSessions.length && remoteUpdatedAt > localUpdatedAt);
+  const localProfiles = normalizedLocal.profiles ?? {};
+  const remoteProfiles = normalizedRemote.profiles ?? {};
+  const profileIds = new Set([
+    ...Object.keys(localProfiles),
+    ...Object.keys(remoteProfiles)
+  ]);
 
-  const mergedSettings = preferRemote
-    ? { ...localState.settings, ...remoteState.settings }
-    : { ...remoteState.settings, ...localState.settings };
-  const syncUrl = localState.settings?.syncUrl ?? mergedSettings.syncUrl;
+  const mergedProfiles = {};
+  profileIds.forEach((profileId) => {
+    const program = PROGRAMS_BY_ID[profileId]?.program;
+    mergedProfiles[profileId] = mergeProfile(
+      localProfiles[profileId],
+      remoteProfiles[profileId],
+      program
+    );
+  });
 
   return {
-    ...localState,
-    ...remoteState,
-    deviceId: localState.deviceId ?? remoteState.deviceId,
+    ...normalizedLocal,
+    ...normalizedRemote,
+    deviceId: normalizedLocal.deviceId ?? normalizedRemote.deviceId,
     settings: {
-      ...mergedSettings,
-      syncUrl
+      ...normalizedRemote.settings,
+      ...normalizedLocal.settings,
+      syncUrl: normalizedLocal.settings?.syncUrl ?? normalizedRemote.settings?.syncUrl
     },
-    exerciseStates: preferRemote
-      ? { ...localState.exerciseStates, ...remoteState.exerciseStates }
-      : { ...remoteState.exerciseStates, ...localState.exerciseStates },
-    programStartDate: preferRemote
-      ? remoteState.programStartDate ?? localState.programStartDate
-      : localState.programStartDate ?? remoteState.programStartDate,
-    sessions: mergedSessions,
-    progress: deriveProgress(mergedSessions),
-    updatedAt: Math.max(localUpdatedAt, remoteUpdatedAt, Date.now())
+    activeProfileId: normalizedLocal.activeProfileId ?? normalizedRemote.activeProfileId,
+    profiles: mergedProfiles,
+    updatedAt: Math.max(
+      normalizedLocal.updatedAt ?? 0,
+      normalizedRemote.updatedAt ?? 0,
+      Date.now()
+    )
   };
 }

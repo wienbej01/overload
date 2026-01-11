@@ -1,61 +1,18 @@
-import { buildDayExercises, createInitialExerciseState, TRAINING_DAYS } from './program.js';
+import {
+  createInitialExerciseState,
+  dedupeSessionsByDay,
+  deriveProgress,
+  getTrainingDays,
+  normalizeExerciseStates,
+  rebuildExerciseStates
+} from './program.js';
+import { PROGRAM_PROFILES, PROGRAMS_BY_ID } from './programs/index.js';
 import { createDeviceId, createSessionId, kgToLb, todayISO } from './utils.js';
 
 const STORAGE_KEY = 'overload_state_v1';
-const SETS_PER_EXERCISE = 3;
-
-function isoDaysAgo(daysAgo) {
-  const date = new Date();
-  date.setDate(date.getDate() - daysAgo);
-  return date.toISOString().slice(0, 10);
-}
-
-function buildSeedSessions({ exerciseStates, bodyweightKg }) {
-  const seedDays = [
-    { dayKey: 'Pull B', date: isoDaysAgo(1) },
-    { dayKey: 'Pull A', date: todayISO() }
-  ];
-
-  const sessions = [];
-  let history = [];
-
-  seedDays.forEach((seed) => {
-    const exercises = buildDayExercises({
-      dayKey: seed.dayKey,
-      weekNumber: 1,
-      exerciseStates,
-      history,
-      bodyweightKg
-    });
-
-    const exercisesWithSets = exercises.map((exercise) => ({
-      ...exercise,
-      sets: Array.from({ length: SETS_PER_EXERCISE }, () => ({
-        reps: exercise.targetReps,
-        durationSec: 0
-      })),
-      success: true
-    }));
-
-    const session = {
-      id: `seed-${seed.date}-${seed.dayKey}`,
-      date: seed.date,
-      dayKey: seed.dayKey,
-      weekNumber: 1,
-      exercises: exercisesWithSets
-    };
-
-    sessions.push(session);
-    history = [...history, session];
-  });
-
-  return sessions;
-}
 
 function buildLegacySessionId(session) {
-  const exerciseIds = (session.exercises ?? [])
-    .map((exercise) => exercise.id)
-    .join('-');
+  const exerciseIds = (session.exercises ?? []).map((exercise) => exercise.id).join('-');
   return `legacy-${session.date}-${session.dayKey}-${exerciseIds}`;
 }
 
@@ -72,113 +29,123 @@ function ensureSessionIds(sessions) {
   return changed ? next : sessions;
 }
 
-export function buildDefaultState(options = {}) {
-  const { seedSessions = false } = options;
-  const settings = {
+function defaultProfileSettings(profileConfig) {
+  return {
     bodyweightKg: 105,
     restSeconds: 90,
-    syncUrl: ''
+    ...(profileConfig?.defaultSettings ?? {})
   };
-  const exerciseStates = createInitialExerciseState();
-  const sessions = seedSessions
-    ? buildSeedSessions({ exerciseStates, bodyweightKg: settings.bodyweightKg })
-    : [];
-  const progress = sessions.length
-    ? deriveProgress(sessions)
-    : {
-        lastCompletedDate: null,
-        lastCompletedDayKey: null,
-        lastCompletedWeekNumber: null,
-        currentWeekNumber: 1,
-        completedDays: []
-      };
+}
+
+function buildProfileState(profileId, overrides = {}) {
+  const profileConfig = PROGRAMS_BY_ID[profileId];
+  const program = profileConfig?.program;
+  const trainingDays = getTrainingDays(program);
+  const base = {
+    id: profileId,
+    name: profileConfig?.name ?? profileId,
+    programId: profileId,
+    programStartDate: todayISO(),
+    settings: defaultProfileSettings(profileConfig),
+    exerciseStates: createInitialExerciseState(program),
+    sessions: [],
+    progress: deriveProgress([], trainingDays)
+  };
+
+  const sessions = dedupeSessionsByDay(
+    ensureSessionIds(overrides.sessions ?? base.sessions)
+  );
+  const progress = deriveProgress(sessions, trainingDays);
+
+  const normalizedStates = normalizeExerciseStates(program, {
+    ...base.exerciseStates,
+    ...overrides.exerciseStates
+  });
+  const rebuiltStates = rebuildExerciseStates(program, sessions, normalizedStates);
+
+  return {
+    ...base,
+    ...overrides,
+    settings: { ...base.settings, ...overrides.settings },
+    exerciseStates: rebuiltStates,
+    sessions,
+    progress
+  };
+}
+
+export function buildDefaultState() {
+  const profiles = PROGRAM_PROFILES.reduce((acc, profile) => {
+    acc[profile.id] = buildProfileState(profile.id);
+    return acc;
+  }, {});
 
   return {
     deviceId: createDeviceId(),
-    settings,
-    programStartDate: todayISO(),
-    exerciseStates,
-    sessions,
-    progress,
+    settings: {
+      syncUrl: ''
+    },
+    activeProfileId: 'jacob',
+    profiles,
     updatedAt: Date.now()
   };
 }
 
-function deriveProgress(sessions) {
-  if (!sessions?.length) {
-    return {
-      lastCompletedDate: null,
-      lastCompletedDayKey: null,
-      lastCompletedWeekNumber: null,
-      currentWeekNumber: 1,
-      completedDays: []
-    };
-  }
-
-  const sorted = [...sessions].sort((a, b) => a.date.localeCompare(b.date));
-  const trainingSessions = sorted.filter((session) =>
-    TRAINING_DAYS.includes(session.dayKey)
-  );
-
-  let currentWeekNumber = 1;
-  let completedDays = new Set();
-  let lastCompletedWeekNumber = null;
-
-  trainingSessions.forEach((session) => {
-    lastCompletedWeekNumber = currentWeekNumber;
-    completedDays.add(session.dayKey);
-    if (completedDays.size >= TRAINING_DAYS.length) {
-      currentWeekNumber += 1;
-      completedDays = new Set();
-    }
+function migrateLegacyState(parsed) {
+  const defaults = buildDefaultState();
+  const jacobProfile = buildProfileState('jacob', {
+    programStartDate: parsed.programStartDate ?? defaults.profiles.jacob.programStartDate,
+    settings: {
+      bodyweightKg: parsed.settings?.bodyweightKg ?? defaults.profiles.jacob.settings.bodyweightKg,
+      restSeconds: parsed.settings?.restSeconds ?? defaults.profiles.jacob.settings.restSeconds
+    },
+    exerciseStates: parsed.exerciseStates ?? defaults.profiles.jacob.exerciseStates,
+    sessions: parsed.sessions ?? []
   });
 
-  const latestTraining = trainingSessions[trainingSessions.length - 1] ?? null;
-
   return {
-    lastCompletedDate: latestTraining?.date ?? null,
-    lastCompletedDayKey: latestTraining?.dayKey ?? null,
-    lastCompletedWeekNumber,
-    currentWeekNumber,
-    completedDays: Array.from(completedDays)
+    ...defaults,
+    deviceId: parsed.deviceId ?? defaults.deviceId,
+    settings: {
+      ...defaults.settings,
+      syncUrl: parsed.settings?.syncUrl ?? defaults.settings.syncUrl
+    },
+    activeProfileId: 'jacob',
+    profiles: {
+      ...defaults.profiles,
+      jacob: jacobProfile
+    },
+    updatedAt: parsed.updatedAt ?? defaults.updatedAt
   };
 }
 
 export function loadState() {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return buildDefaultState({ seedSessions: true });
+    if (!raw) return buildDefaultState();
     const parsed = JSON.parse(raw);
-    const defaults = buildDefaultState();
-    const settings = { ...defaults.settings, ...parsed.settings };
-    const exerciseStates = { ...defaults.exerciseStates, ...parsed.exerciseStates };
-    let sessions = parsed.sessions ?? defaults.sessions;
 
-    if (!sessions.length) {
-      sessions = buildSeedSessions({
-        exerciseStates,
-        bodyweightKg: settings.bodyweightKg
-      });
+    if (!parsed.profiles) {
+      return migrateLegacyState(parsed);
     }
-    sessions = ensureSessionIds(sessions);
 
-    const progress = sessions.length
-      ? deriveProgress(sessions)
-      : { ...defaults.progress, ...parsed.progress };
+    const defaults = buildDefaultState();
+    const profiles = { ...defaults.profiles };
+    Object.keys(profiles).forEach((profileId) => {
+      profiles[profileId] = buildProfileState(profileId, parsed.profiles?.[profileId]);
+    });
 
     return {
       ...defaults,
       ...parsed,
       deviceId: parsed.deviceId ?? defaults.deviceId,
-      settings,
-      exerciseStates,
-      sessions,
-      progress,
+      settings: { ...defaults.settings, ...parsed.settings },
+      activeProfileId: parsed.activeProfileId ?? defaults.activeProfileId,
+      profiles,
       updatedAt: parsed.updatedAt ?? defaults.updatedAt
     };
   } catch (error) {
     console.error('Failed to load state', error);
-    return buildDefaultState({ seedSessions: true });
+    return buildDefaultState();
   }
 }
 

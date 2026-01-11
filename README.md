@@ -6,99 +6,82 @@ Local-first progressive overload training app with a rugged in-gym UI, timers, a
 
 - Progressive overload logic with automatic weight/rep progression per exercise.
 - Daily cycle support (Push A, Pull A, Mobility, Push B, Pull B).
+- Multiple profiles with separate programs, exercise libraries, and progression.
 - Large in-gym UI with timers, set tracking, and quick adjustments.
-- Local-first storage with CSV export.
+- Local-first storage with CSV export and a calendar history view.
 
-## Run locally
+## Quick start (laptop + iPhone)
 
 1. Install dependencies:
    ```bash
    npm install
    ```
-2. Start the dev server and expose it on your LAN:
+2. Build and serve the PWA:
    ```bash
-   npm run dev -- --host 0.0.0.0 --port 5173
+   npm run build
+   systemctl --user restart gym-app.service
    ```
-3. On your laptop, open `http://localhost:5173`.
-4. On your iPhone (same network), open `http://<laptop-ip>:5173` in Safari and tap **Share → Add to Home Screen**.
+3. On the laptop, open `http://localhost:4173`.
+4. On the iPhone, open `http://<laptop-tailscale-ip>/` and tap **Share → Add to Home Screen**.
 
-## Fixed IP / always-on access options
+## Tailscale access (recommended)
 
-You move networks and use VPN, so a static local IP alone will not stay consistent. Two options:
+Use the Tailscale IP or MagicDNS hostname so the app works on any network.
 
-1. **Recommended: Tailscale (stable IP + MagicDNS)**
-   - Install Tailscale on both your laptop and iPhone.
-   - It gives your laptop a stable private IP (and a hostname) no matter where you are.
-   - Open the app on iPhone using `http://<tailscale-ip>:5173` or `http://<hostname>:5173`.
+1. Install Tailscale on laptop + iPhone (same tailnet).
+2. Open the app using:
+   ```text
+   http://<laptop-tailscale-ip>/
+   ```
+   or
+   ```text
+   http://<laptop-magicdns-hostname>/
+   ```
 
-2. **Local LAN static IP (only works on a specific Wi-Fi network)**
-   - Configure a static DHCP reservation in your router for the laptop’s MAC address.
-   - Use `http://<reserved-ip>:5173` on your iPhone when on that network.
+If MagicDNS fails, use the Tailscale IP directly.
 
-## Using a phone hotspot or switching Wi‑Fi
+## Services (systemd)
 
-Tailscale works across any network (home Wi‑Fi, gym Wi‑Fi, phone hotspot) as long as both devices are connected to Tailscale.
+The laptop uses systemd user services for the app and sync server:
 
-Recommended workflow when switching networks:
-- Connect the laptop to the new Wi‑Fi or phone hotspot.
-- Open the Tailscale app on the iPhone and confirm **Connected**.
-- On the laptop, ensure the app service is running:
-  ```bash
-  systemctl --user status gym-app.service
-  ```
-- Ensure Tailscale Serve is configured (persistent):
-  ```bash
-  sudo tailscale serve status
-  ```
-  If it shows “No serve config”, re‑enable:
-  ```bash
-  sudo tailscale serve --bg --http=80 4173
-  ```
-- Open the app on iPhone:
-  ```text
-  http://100.118.64.67/
-  ```
-  or
-  ```text
-  http://jacob-20nks0qn06.tail989908.ts.net/
-  ```
+```bash
+systemctl --user status gym-app.service
+systemctl --user status gym-app-sync.service
+```
 
-## Data and export
+To restart:
 
-- Data is stored locally in the browser's localStorage on the laptop under `overload_state_v1`.
-- Optional sync server can persist and merge sessions across devices.
-- Progress tracking is stored with the latest completed session:
-  - `progress.lastCompletedDate`
-  - `progress.lastCompletedDayKey`
-  - `progress.lastCompletedWeekNumber`
-- Export CSV from the **Settings** section.
+```bash
+systemctl --user restart gym-app.service
+systemctl --user restart gym-app-sync.service
+```
 
-## Day selection and flow
+## Profiles
 
-- The app starts the day view at the next day after the last completed session.
-- You can override "Today" using the day dropdown in the header to run Push A/B, Pull A/B, Mobility, or Rest.
-- Starting a day creates a session for the selected day.
+- The app supports multiple users with separate programs, exercise libraries, and history.
+- Choose profiles from the header dropdown or the landing screen.
+- Program definitions live in `src/programs/jacob.js` and `src/programs/mari.js` (shared base in `src/programs/base.js`).
 
-## Workout adjustments
+## Data, history, and export
 
-- Weight and target reps are adjusted directly in the main, large selectors on the Workout screen.
-- Achieved reps are tracked per set and saved with the session.
+- Data is stored locally in browser storage under `overload_state_v1`.
+- The History tab shows a two-month calendar with pass/miss badges.
+- Export CSV from **Settings → Actions → Export CSV**.
 
-## Notes
+## Progression and scheduling
 
-- Default rest timer is 90s with a 120s option.
-- Program automatically increases from 3 → 4 → 5 → 6 exercises after weeks 4, 8, and 12.
-- Pull-down → pull-up transition uses performance + bodyweight thresholds and adds negatives when ready.
+- The app defaults to the **next day** after the latest completed session.
+- You can override the day in the header; progression still uses session history.
+- Program increases exercises per session every 4 weeks: 3 → 4 → 5 → 6.
+- Sets per exercise increase every 4 weeks: 3 → 4 → 5 → 6.
+- Progression rule: 3x5 → 3x6 → 3x7 → add weight → reset to 3x5.
+- If a target is missed twice in a row, weight deloads ~5% and resets to 3x5.
 
 ## Sync server (iPhone -> laptop)
 
-Run a lightweight sync server on the laptop and point the iPhone to it. The app pulls on load and pushes automatically when finishing a day.
+Run a lightweight sync server on the laptop and point the iPhone to it. The app pulls on load and pushes after finishing a day.
 
 1. Start the server on the laptop:
-   ```bash
-   node sync-server.js --port 8787 --file ./sync-data.json
-   ```
-   Or manage it with systemd:
    ```bash
    systemctl --user enable --now gym-app-sync.service
    systemctl --user status gym-app-sync.service --no-pager
@@ -109,11 +92,20 @@ Run a lightweight sync server on the laptop and point the iPhone to it. The app 
    ```
 3. Finish a workout on the iPhone to push the latest session and settings.
 
-If the field is empty, the app auto-fills it using the current host (same hostname, port 8787).
-
 The sync state is stored in `sync-data.json` on the laptop.
+
+## Adding a new iPhone (Mari)
+
+1. Install Tailscale on the new phone and confirm it is in the same tailnet.
+2. Open `http://<laptop-tailscale-ip>/` in Safari and add to Home Screen.
+3. Open the app → **Settings** → set **Sync server URL** to:
+   ```text
+   http://<laptop-tailscale-ip>:8787
+   ```
+4. Select the **Mari** profile.
 
 ## Troubleshooting
 
-- If the app keeps showing Day 1, use **Settings → Reset All Data** once to rebuild progress from storage.
-- If you want to ignore history for a day, use the day dropdown to select a different workout.
+- If history is wrong on a device, use **Settings → Actions → Force Pull From Server**.
+- If a profile is polluted, switch to that profile and use **Reset All Data** (per profile).
+- If MagicDNS fails, use the Tailscale IP directly.

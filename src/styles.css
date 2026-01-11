@@ -47,16 +47,22 @@ body {
   height: 100svh;
   padding: calc(14px + env(safe-area-inset-top)) 12px
     calc(18px + env(safe-area-inset-bottom));
+  padding-right: 22px;
   gap: 12px;
   overflow: hidden;
 }
 
 .header {
   display: flex;
-  flex-wrap: wrap;
-  align-items: center;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.header-title-row {
+  display: flex;
+  align-items: flex-start;
   justify-content: space-between;
-  gap: 16px;
+  gap: 12px;
 }
 
 .app.workout .header {
@@ -86,8 +92,16 @@ h1 {
   font-size: clamp(1.35rem, 3vw, 2rem);
 }
 
+.header-title-row h1 {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: min(100%, 420px);
+}
+
 .header-meta {
   display: flex;
+  align-items: center;
   gap: 18px;
   background: var(--panel);
   padding: 14px 18px;
@@ -96,8 +110,11 @@ h1 {
   box-shadow: 0 10px 24px var(--shadow);
 }
 
+.app.workout .header-meta {
+  padding: 10px 14px;
+}
+
 .menu-button {
-  margin-left: auto;
   background: transparent;
   color: var(--text);
   border: 1px solid var(--border);
@@ -129,6 +146,28 @@ h1 {
   font-size: 1.6rem;
 }
 
+.header-meta select {
+  line-height: 1.2;
+}
+
+.profile-select-header {
+  background: transparent;
+  border: none;
+  color: var(--text);
+  font-size: 1.6rem;
+  font-weight: 600;
+  font-family: inherit;
+  letter-spacing: 0.02em;
+  padding: 2px 0;
+  min-height: 44px;
+  min-width: 110px;
+}
+
+.profile-select-header:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
 .day-select {
   background: transparent;
   border: none;
@@ -153,6 +192,31 @@ h1 {
   border-radius: 20px;
   padding: 22px;
   box-shadow: 0 14px 34px var(--shadow-strong);
+}
+
+.profile-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.profile-label {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--muted);
+}
+
+.profile-select {
+  width: 100%;
+  background: #101010;
+  color: var(--text);
+  border: 1px solid var(--border-strong);
+  border-radius: 16px;
+  padding: 12px 14px;
+  font-family: inherit;
+  font-size: 1.4rem;
+  min-height: 56px;
 }
 
 .app.workout .panel {
@@ -429,6 +493,7 @@ h1 {
   padding: 16px;
   border: 1px solid var(--border-strong);
   background: var(--panel-strong);
+  overflow: hidden;
 }
 
 .app.workout .current-exercise,
@@ -521,12 +586,14 @@ h1 {
 .metric-stack {
   display: grid;
   gap: 6px;
+  min-width: 0;
 }
 
 .metric-block {
   display: flex;
   flex-direction: column;
   gap: 3px;
+  min-width: 0;
 }
 
 .metric-label {
@@ -560,12 +627,16 @@ h1 {
 
 .metric-select {
   width: 100%;
+  min-width: 0;
+  max-width: 100%;
   background: #101010;
   color: var(--text);
   border: 1px solid var(--border-strong);
   border-radius: 16px;
   padding: 8px 12px;
   font-family: inherit;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .metric-select:disabled {
@@ -766,7 +837,7 @@ button:disabled {
 .settings-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-  gap: 16px;
+  gap: 12px;
 }
 
 .settings-grid label {
@@ -789,25 +860,186 @@ button:disabled {
   color: var(--text);
 }
 
-.settings-actions {
-  margin-top: 16px;
+.settings-body {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  overflow-y: auto;
+  padding-top: 6px;
 }
 
-.settings-section {
-  margin-top: 20px;
-  padding-top: 16px;
-  border-top: 1px solid var(--border);
+.settings-tabs {
+  display: flex;
+  gap: 8px;
+  padding: 0 4px 10px;
+}
+
+.settings-tabs button {
+  flex: 1;
+  border-radius: 999px;
+  padding: 8px 12px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  color: var(--text);
+  font-weight: 600;
+}
+
+.settings-tabs button.active {
+  background: rgba(255, 255, 255, 0.14);
+  border-color: rgba(255, 255, 255, 0.2);
+}
+
+.history-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.history-legend {
+  display: flex;
+  gap: 16px;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.history-legend div {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.legend-chip {
+  width: 14px;
+  height: 14px;
+  border-radius: 4px;
+  display: inline-block;
+}
+
+.legend-chip.pass {
+  background: rgba(60, 207, 125, 0.6);
+}
+
+.legend-chip.fail {
+  background: rgba(228, 87, 46, 0.6);
+}
+
+.legend-chip.none {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.history-months {
+  display: grid;
+  gap: 16px;
+}
+
+.calendar-card {
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--border-strong);
+  border-radius: 18px;
+  padding: 14px;
+}
+
+.calendar-header {
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  margin-bottom: 10px;
+}
+
+.calendar-weekdays {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 6px;
+  font-size: 0.75rem;
+  color: var(--muted);
+  margin-bottom: 6px;
+}
+
+.calendar-grid {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 6px;
+}
+
+.calendar-cell {
+  position: relative;
+  background: rgba(0, 0, 0, 0.35);
+  border-radius: 12px;
+  min-height: 58px;
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.calendar-cell.muted {
+  opacity: 0.35;
+}
+
+.calendar-day {
+  font-size: 0.75rem;
+  color: var(--muted);
+}
+
+.calendar-badge {
+  font-size: 0.65rem;
+  font-weight: 600;
+  padding: 3px 6px;
+  border-radius: 999px;
+  width: fit-content;
+}
+
+.calendar-badge.pass {
+  background: rgba(60, 207, 125, 0.2);
+  color: #a8f3c8;
+}
+
+.calendar-badge.fail {
+  background: rgba(228, 87, 46, 0.2);
+  color: #ffb29c;
+}
+
+.settings-card {
+  background: linear-gradient(140deg, rgba(255, 255, 255, 0.04), rgba(255, 255, 255, 0.01));
+  border: 1px solid var(--border-strong);
+  border-radius: 16px;
+  padding: 14px;
+}
+
+.settings-card h3 {
+  margin: 0 0 10px;
+  font-size: 1.05rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.settings-meta {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.settings-meta strong {
+  display: block;
+  font-size: 1.2rem;
+}
+
+.settings-meta-label {
+  display: block;
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--muted);
+  margin-bottom: 4px;
 }
 
 .settings-actions-row {
-  display: flex;
-  gap: 12px;
-  flex-wrap: wrap;
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 10px;
 }
 
-.settings-section h3 {
-  margin: 0 0 8px;
-  font-size: 1.05rem;
+.settings-inline-status p {
+  margin: 10px 0 0;
 }
 
 .modal-overlay {
@@ -815,9 +1047,11 @@ button:disabled {
   inset: 0;
   background: rgba(0, 0, 0, 0.7);
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: center;
-  padding: 20px;
+  padding: calc(12px + env(safe-area-inset-top)) 12px
+    calc(12px + env(safe-area-inset-bottom));
+  overflow-y: auto;
   z-index: 20;
 }
 
@@ -828,6 +1062,10 @@ button:disabled {
   padding: 20px;
   border: 1px solid var(--border-strong);
   box-shadow: 0 20px 50px var(--shadow-strong);
+  max-height: calc(100svh - (24px + env(safe-area-inset-top) + env(safe-area-inset-bottom)));
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
 }
 
 .modal.fullscreen {
@@ -837,6 +1075,35 @@ button:disabled {
   padding: 24px;
   display: flex;
   flex-direction: column;
+}
+
+.settings-modal .modal-header {
+  position: sticky;
+  top: 0;
+  background: var(--panel);
+  padding-bottom: 10px;
+  z-index: 2;
+}
+
+.modal-close {
+  background: transparent;
+  border: 1px solid var(--border-strong);
+  color: var(--text);
+  width: 48px;
+  height: 48px;
+  border-radius: 14px;
+  font-size: 2rem;
+  padding: 0;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 48px;
+}
+
+.modal-close:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 .modal.fullscreen .modal-header h2 {
@@ -849,6 +1116,7 @@ button:disabled {
   line-height: 1.6;
   color: var(--text);
   overflow-y: auto;
+  white-space: pre-wrap;
 }
 
 .modal-header {
@@ -871,6 +1139,10 @@ button:disabled {
     width: 100%;
   }
 
+  .modal-header button {
+    width: auto;
+  }
+
   .menu-button {
     width: 52px;
     height: 52px;
@@ -884,10 +1156,12 @@ button:disabled {
     grid-template-columns: 1fr;
   }
 
+
   .app.workout {
     padding: calc(12px + env(safe-area-inset-top)) 10px
       calc(16px + env(safe-area-inset-bottom));
     gap: 12px;
+    padding-right: 20px;
   }
 
   .app.workout .panel {
